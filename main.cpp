@@ -8,7 +8,7 @@ using namespace cv;
 using namespace std;
 
 // =====================================================
-// PARAMETERS
+// ADJUSTABLE PARAMETERS
 // =====================================================
 
 const int TABLE_NUMBER = 1;
@@ -16,12 +16,23 @@ const int TABLE_NUMBER = 1;
 const string FOLDER =
     "/Users/aadyavig/CLionProjects/PoolBallAssignment/";
 
+// Mean shift
 const int SPATIAL_RADIUS = 15;
-const int COLOUR_RADIUS = 25;
+const int COLOUR_RADIUS = 20;
 const int PYRAMID_LEVEL = 1;
 
-const double DISTANCE_THRESHOLD = 0.3;
-const int MIN_REGION_AREA = 50;
+// Canny
+const int CANNY_LOW = 50;
+const int CANNY_HIGH = 100;
+
+// Hough circle detection
+const double HOUGH_DP = 1.0;
+const double HOUGH_MIN_DISTANCE = 25;
+const double HOUGH_PARAM1 = 100;
+const double HOUGH_PARAM2 = 25;
+
+const int MIN_CIRCLE_RADIUS = 10;
+const int MAX_CIRCLE_RADIUS = 50;
 
 // =====================================================
 // PERSPECTIVE TRANSFORMATION
@@ -44,7 +55,8 @@ Mat perspectiveTransformTable(const Mat& image) {
     };
 
     Mat matrix = getPerspectiveTransform(
-        original, transformed
+        original,
+        transformed
     );
 
     Mat result;
@@ -60,10 +72,10 @@ Mat perspectiveTransformTable(const Mat& image) {
 }
 
 // =====================================================
-// MEAN-SHIFT SEGMENTATION
+// MEAN SHIFT
 // =====================================================
 
-Mat segmentImage(const Mat& image) {
+Mat applyMeanShift(const Mat& image) {
 
     Mat result;
 
@@ -79,224 +91,118 @@ Mat segmentImage(const Mat& image) {
 }
 
 // =====================================================
-// FOREGROUND MASK
+// CANNY EDGE DETECTION
 // =====================================================
 
-Mat segmentBalls(const Mat& image) {
+Mat detectEdges(const Mat& image) {
 
-    Mat lab;
-    cvtColor(image, lab, COLOR_BGR2Lab);
-
-    // Estimate felt colour from central table region
-    Rect sampleRegion(
-        image.cols / 4,
-        image.rows / 4,
-        image.cols / 2,
-        image.rows / 2
+    Mat gray;
+    cvtColor(
+        image,
+        gray,
+        COLOR_BGR2GRAY
     );
 
-    Scalar backgroundColour = mean(
-        lab(sampleRegion)
+    Mat blurred;
+    GaussianBlur(
+        gray,
+        blurred,
+        Size(5, 5),
+        1.5
     );
 
-    Mat background(
-        lab.size(),
-        lab.type(),
-        backgroundColour
+    Mat edges;
+    Canny(
+        blurred,
+        edges,
+        CANNY_LOW,
+        CANNY_HIGH
     );
 
-    Mat difference;
-    absdiff(lab, background, difference);
-
-    vector<Mat> channels;
-    split(difference, channels);
-
-    Mat distance;
-    magnitude(
-        channels[1],
-        channels[2],
-        distance
-    );
-
-    Mat mask;
-    threshold(
-        distance,
-        mask,
-        25,
-        255,
-        THRESH_BINARY
-    );
-
-    mask.convertTo(mask, CV_8U);
-
-    // Remove noise
-    Mat kernel = getStructuringElement(
-        MORPH_ELLIPSE,
-        Size(5, 5)
-    );
-
-    morphologyEx(
-        mask,
-        mask,
-        MORPH_OPEN,
-        kernel
-    );
-
-    morphologyEx(
-        mask,
-        mask,
-        MORPH_CLOSE,
-        kernel
-    );
-
-    return mask;
+    return edges;
 }
 
 // =====================================================
-// WATERSHED REGION DETECTION
+// HOUGH CIRCLE DETECTION
 // =====================================================
 
-vector<Point2f> detectRegions(
+Mat detectCircles(
     const Mat& image,
-    const Mat& binaryMask,
-    Mat& watershedDisplay
+    vector<Vec3f>& circles
 ) {
 
-    vector<Point2f> centres;
-
-    // Distance transform
-    Mat distance;
-
-    distanceTransform(
-        binaryMask,
-        distance,
-        DIST_L2,
-        5
+    Mat gray;
+    cvtColor(
+        image,
+        gray,
+        COLOR_BGR2GRAY
     );
 
-    normalize(
-        distance,
-        distance,
-        0,
-        1.0,
-        NORM_MINMAX
+    // Reduce image noise
+    Mat blurred;
+
+    GaussianBlur(
+        gray,
+        blurred,
+        Size(9, 9),
+        2,
+        2
     );
 
-    // Identify foreground markers
-    Mat foreground;
-
-    threshold(
-        distance,
-        foreground,
-        DISTANCE_THRESHOLD,
-        1.0,
-        THRESH_BINARY
+    // Detect circles
+    HoughCircles(
+        blurred,
+        circles,
+        HOUGH_GRADIENT,
+        HOUGH_DP,
+        HOUGH_MIN_DISTANCE,
+        HOUGH_PARAM1,
+        HOUGH_PARAM2,
+        MIN_CIRCLE_RADIUS,
+        MAX_CIRCLE_RADIUS
     );
 
-    Mat foreground8U;
-    foreground.convertTo(
-        foreground8U,
-        CV_8U,
-        255
-    );
+    Mat result = image.clone();
 
-    // Label connected foreground regions
-    Mat markers;
+    // Draw circles
+    for (size_t i = 0; i < circles.size(); i++) {
 
-    connectedComponents(
-        foreground8U,
-        markers
-    );
+        Vec3f c = circles[i];
 
-    markers += 1;
-
-    // Mark unknown regions
-    Mat unknown;
-    subtract(
-        binaryMask,
-        foreground8U,
-        unknown
-    );
-
-    markers.setTo(0, unknown);
-
-    // Watershed segmentation
-    watershed(image, markers);
-
-    watershedDisplay = image.clone();
-
-    double minVal, maxVal;
-
-    minMaxLoc(
-        markers,
-        &minVal,
-        &maxVal
-    );
-
-    // Extract each region
-    for (int label = 2;
-         label <= static_cast<int>(maxVal);
-         label++) {
-
-        Mat regionMask = markers == label;
-
-        int area = countNonZero(regionMask);
-
-        if (area < MIN_REGION_AREA)
-            continue;
-
-        Moments m = moments(
-            regionMask,
-            true
+        Point centre(
+            cvRound(c[0]),
+            cvRound(c[1])
         );
 
-        if (m.m00 == 0)
-            continue;
+        int radius = cvRound(c[2]);
 
-        Point2f centre(
-            static_cast<float>(m.m10 / m.m00),
-            static_cast<float>(m.m01 / m.m00)
-        );
-
-        centres.push_back(centre);
-
-        // Draw region boundary
-        vector<vector<Point>> contours;
-
-        findContours(
-            regionMask.clone(),
-            contours,
-            RETR_EXTERNAL,
-            CHAIN_APPROX_SIMPLE
-        );
-
-        drawContours(
-            watershedDisplay,
-            contours,
-            -1,
+        // Draw circumference
+        circle(
+            result,
+            centre,
+            radius,
             Scalar(0, 255, 0),
             2
         );
 
-        // Draw centroid
+        // Draw centre
         circle(
-            watershedDisplay,
+            result,
             centre,
-            4,
+            3,
             Scalar(0, 0, 255),
             FILLED
         );
+
+        cout << "Circle " << i + 1
+             << ": Centre = ("
+             << centre.x << ", "
+             << centre.y << ")"
+             << ", Radius = "
+             << radius << endl;
     }
 
-    // Mark watershed boundaries
-    Mat boundaries = markers == -1;
-
-    watershedDisplay.setTo(
-        Scalar(255, 0, 0),
-        boundaries
-    );
-
-    return centres;
+    return result;
 }
 
 // =====================================================
@@ -308,12 +214,10 @@ int main() {
     string filename =
         "Table" + to_string(TABLE_NUMBER) + ".jpeg";
 
-    Mat image = imread(
-        FOLDER + filename
-    );
+    Mat image = imread(FOLDER + filename);
 
     if (image.empty()) {
-        cout << "Error loading: "
+        cout << "Error loading image: "
              << filename << endl;
         return -1;
     }
@@ -322,36 +226,26 @@ int main() {
     Mat transformed =
         perspectiveTransformTable(image);
 
-    // 2. Mean-shift segmentation
+    // 2. Mean shift
     Mat segmented =
-        segmentImage(transformed);
+        applyMeanShift(transformed);
 
-    // 3. Foreground segmentation
-    Mat binaryMask =
-        segmentBalls(segmented);
+    // 3. Canny edge detection
+    Mat edges =
+        detectEdges(segmented);
 
-    // 4. Watershed region detection
-    Mat watershedDisplay;
+    // 4. Hough circle transform
+    vector<Vec3f> circles;
 
-    vector<Point2f> centres =
-        detectRegions(
-            segmented,
-            binaryMask,
-            watershedDisplay
-        );
+    Mat result =
+        detectCircles(segmented, circles);
 
-    // 5. Output detected centres
-    cout << "Detected regions: "
-         << centres.size() << endl;
+    // 5. Print results
+    cout << endl;
+    cout << "Total detected circles: "
+         << circles.size() << endl;
 
-    for (size_t i = 0; i < centres.size(); i++) {
-
-        cout << "Region " << i + 1
-             << ": " << centres[i]
-             << endl;
-    }
-
-    // 6. Display intermediate results
+    // 6. Display results
     imshow(
         "Original Image",
         image
@@ -368,19 +262,24 @@ int main() {
     );
 
     imshow(
-        "Binary Mask",
-        binaryMask
+        "Canny Edges",
+        edges
     );
 
     imshow(
-        "Watershed Segmentation",
-        watershedDisplay
+        "Hough Circle Detection",
+        result
     );
 
-    // 7. Save output
+    // 7. Save results
     imwrite(
-        FOLDER + "WatershedResult.png",
-        watershedDisplay
+        FOLDER + "HoughCircles.png",
+        result
+    );
+
+    imwrite(
+        FOLDER + "CannyEdges.png",
+        edges
     );
 
     waitKey(0);
