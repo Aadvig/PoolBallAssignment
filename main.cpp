@@ -43,8 +43,8 @@ Mat detectBackground(const Mat& image) {
     cvtColor(image, hsv, COLOR_BGR2HSV);
 
     // Define HSV range for green felt
-    Scalar lowerGreen(30, 50, 40);
-    Scalar upperGreen(100, 100, 170);
+    Scalar lowerGreen(30, 20, 60);
+    Scalar upperGreen(150, 90, 255);
 
     // Create binary mask (white = background)
     Mat mask;
