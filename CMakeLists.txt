@@ -4,10 +4,10 @@ project(PoolBallAssignment)
 
 set(CMAKE_CXX_STANDARD 17)
 
-# Homebrew OpenCV installation
-set(CMAKE_PREFIX_PATH "/opt/homebrew/opt/opencv")
+# Use OpenCV 4 instead of OpenCV 5
+set(OpenCV_DIR "/opt/homebrew/opt/opencv@4/lib/cmake/opencv4")
 
-find_package(OpenCV REQUIRED)
+find_package(OpenCV 4 REQUIRED)
 
 add_executable(PoolBallAssignment main.cpp)
 

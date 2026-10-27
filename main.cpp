@@ -2,23 +2,104 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 
+using namespace cv;
+using namespace std;
+
+// Perspective transformation
+Mat perspectiveTransformTable(const Mat& image) {
+
+    // Original table corners (x = column, y = row)
+    Point2f original[4] = {
+        Point2f(337, 35),    // Top left
+        Point2f(1570, 21),   // Top right
+        Point2f(38, 472),    // Bottom left
+        Point2f(1888, 451)   // Bottom right
+    };
+
+    // Destination corners
+    Point2f transformed[4] = {
+        Point2f(0, 0),
+        Point2f(1433, 0),
+        Point2f(0, 682),
+        Point2f(1433, 682)
+    };
+
+    // Calculate transformation matrix
+    Mat matrix = getPerspectiveTransform(original, transformed);
+
+    // Apply transformation
+    Mat result;
+    warpPerspective(image, result, matrix, Size(1434, 683));
+
+    return result;
+}
+
+
+
+Mat detectBackground(const Mat& image) {
+
+    // Convert image from BGR to HSV
+    Mat hsv;
+    cvtColor(image, hsv, COLOR_BGR2HSV);
+
+    // Define HSV range for green felt
+    Scalar lowerGreen(30, 50, 40);
+    Scalar upperGreen(100, 100, 170);
+
+    // Create binary mask (white = background)
+    Mat mask;
+    inRange(hsv, lowerGreen, upperGreen, mask);
+
+    // Create a red overlay
+    Mat overlay = image.clone();
+    overlay.setTo(Scalar(0, 0, 255), mask);
+
+    // Blend overlay with original image
+    Mat highlighted;
+    addWeighted(image, 0.5, overlay, 0.5, 0, highlighted);
+
+    // Display results
+    imshow("Background Mask", mask);
+    imshow("Highlighted Background", highlighted);
+
+    return mask;
+}
+
+
 int main() {
-    std::cout << "OpenCV version: " << CV_VERSION << std::endl;
 
-    // Create a 500x500 image
-    cv::Mat image(500, 500, CV_8UC3, cv::Scalar(40, 40, 40));
+    // Load image
+    string folder = "/Users/aadyavig/CLionProjects/PoolBallAssignment/";
+    string filename = "Table1.jpeg";
 
-    // Draw a green circle
-    cv::circle(image, cv::Point(250, 250), 100,
-               cv::Scalar(0, 255, 0), -1);
+    Mat image = imread(folder + filename);
 
-    // Display the image
-    cv::imshow("OpenCV Test", image);
+    if (image.empty()) {
+        cout << "Error loading image!" << endl;
+        return -1;
+    }
 
-    std::cout << "OpenCV is working!" << std::endl;
+    // Apply perspective transformation
+    Mat transformed = perspectiveTransformTable(image);
 
-    // Wait for a key press
-    cv::waitKey(0);
+    // Detect green background
+    Mat backgroundMask = detectBackground(transformed);
+
+    // Display transformed image
+    imshow("Transformed Image", transformed);
+
+    waitKey(0);
+    destroyAllWindows();
+
+    // Display results
+    imshow("Original Image", image);
+    imshow("Transformed Image", transformed);
+
+    // Save transformed image
+    imwrite("TransformedTable.jpeg", transformed);
+
+    waitKey(0);
+    destroyAllWindows();
 
     return 0;
 }
