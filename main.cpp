@@ -8,15 +8,13 @@ using namespace std;
 // Perspective transformation
 Mat perspectiveTransformTable(const Mat& image) {
 
-    // Original table corners (x = column, y = row)
     Point2f original[4] = {
-        Point2f(337, 35),    // Top left
-        Point2f(1570, 21),   // Top right
-        Point2f(38, 472),    // Bottom left
-        Point2f(1888, 451)   // Bottom right
+        Point2f(337, 35),
+        Point2f(1570, 21),
+        Point2f(38, 472),
+        Point2f(1888, 451)
     };
 
-    // Destination corners
     Point2f transformed[4] = {
         Point2f(0, 0),
         Point2f(1433, 0),
@@ -24,51 +22,34 @@ Mat perspectiveTransformTable(const Mat& image) {
         Point2f(1433, 682)
     };
 
-    // Calculate transformation matrix
     Mat matrix = getPerspectiveTransform(original, transformed);
 
-    // Apply transformation
     Mat result;
     warpPerspective(image, result, matrix, Size(1434, 683));
 
     return result;
 }
 
+// Canny edge detection
+Mat detectEdges(const Mat& image) {
 
+    // Convert to grayscale
+    Mat gray;
+    cvtColor(image, gray, COLOR_BGR2GRAY);
 
-Mat detectBackground(const Mat& image) {
+    // Reduce noise
+    Mat blurred;
+    GaussianBlur(gray, blurred, Size(5, 5), 1.5);
 
-    // Convert image from BGR to HSV
-    Mat hsv;
-    cvtColor(image, hsv, COLOR_BGR2HSV);
+    // Apply Canny
+    Mat edges;
+    Canny(blurred, edges, 40, 150);
 
-    // Define HSV range for green felt
-    Scalar lowerGreen(30, 10, 10);
-    Scalar upperGreen(150, 90, 255);
-
-    // Create binary mask (white = background)
-    Mat mask;
-    inRange(hsv, lowerGreen, upperGreen, mask);
-
-    // Create a red overlay
-    Mat overlay = image.clone();
-    overlay.setTo(Scalar(0, 0, 255), mask);
-
-    // Blend overlay with original image
-    Mat highlighted;
-    addWeighted(image, 0.5, overlay, 0.5, 0, highlighted);
-
-    // Display results
-    imshow("Background Mask", mask);
-    imshow("Highlighted Background", highlighted);
-
-    return mask;
+    return edges;
 }
-
 
 int main() {
 
-    // Load image
     string folder = "/Users/aadyavig/CLionProjects/PoolBallAssignment/";
     string filename = "Table1.jpeg";
 
@@ -79,24 +60,18 @@ int main() {
         return -1;
     }
 
-    // Apply perspective transformation
+    // Perspective transformation
     Mat transformed = perspectiveTransformTable(image);
 
-    // Detect green background
-    Mat backgroundMask = detectBackground(transformed);
+    // Edge detection
+    Mat edges = detectEdges(transformed);
 
-    // Display transformed image
+    // Display images
     imshow("Transformed Image", transformed);
+    imshow("Canny Edges", edges);
 
-    waitKey(0);
-    destroyAllWindows();
-
-    // Display results
-    imshow("Original Image", image);
-    imshow("Transformed Image", transformed);
-
-    // Save transformed image
-    imwrite("TransformedTable.jpeg", transformed);
+    // Save results
+    imwrite(folder + "CannyEdges.png", edges);
 
     waitKey(0);
     destroyAllWindows();
