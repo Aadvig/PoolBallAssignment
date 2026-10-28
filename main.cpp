@@ -10,8 +10,8 @@ using namespace std;
 // ADJUSTABLE PARAMETERS
 // =====================================================
 
-const int TABLE_NUMBER = 2;
-const string SELECTED_COLOUR = "Yellow";   // Change this only
+const int TABLE_NUMBER = 7;
+const string SELECTED_COLOUR = "Black";   // Change this only
 
 // Mean shift
 const int SPATIAL_RADIUS = 15;
@@ -19,8 +19,8 @@ const int COLOUR_RADIUS = 20;
 const int PYRAMID_LEVEL = 1;
 
 // Canny
-const int CANNY_LOW = 250;
-const int CANNY_HIGH = 300;
+const int CANNY_LOW = 50;
+const int CANNY_HIGH = 100;
 
 // Colour mask cleanup
 const int MASK_KERNEL_SIZE = 3;
@@ -28,8 +28,8 @@ const int EDGE_EXPANSION = 7;
 
 // Circle detection
 const int REGION_MERGE_DISTANCE = 5;
-const int MIN_CIRCLE_RADIUS = 20;
-const int MAX_CIRCLE_RADIUS = 50;
+const int MIN_CIRCLE_RADIUS = 10;
+const int MAX_CIRCLE_RADIUS = 100;
 
 // Folder
 const string FOLDER =
@@ -47,14 +47,15 @@ struct ColourRange {
 
 vector<ColourRange> getColourRanges() {
     return {
-        {"Yellow", Scalar(20, 200, 200), Scalar(43, 255, 255)},
-        {"Blue",   Scalar(116, 130, 65), Scalar(123, 255, 255)},
-        {"Red",    Scalar(130, 170, 140), Scalar(179, 255, 255)},
-        {"Brown",  Scalar(0, 110, 65), Scalar(12, 210, 170)},
+        {"Red",  Scalar(0, 170, 115), Scalar(5, 255, 255)},
+        {"Red2", Scalar(173, 170, 115), Scalar(179, 255, 255)},
+        {"Orange", Scalar(7, 130, 140), Scalar(16, 255, 255)},
+        {"Yellow", Scalar(20, 200, 200), Scalar(39, 255, 255)},
         {"Green",  Scalar(40, 100, 60), Scalar(85, 255, 255)},
-        {"Orange", Scalar(8, 130, 100), Scalar(20, 255, 255)},
-        {"Purple", Scalar(125, 80, 50), Scalar(155, 255, 255)},
-        {"Black",  Scalar(0, 0, 0), Scalar(179, 255, 65)},
+        {"Blue", Scalar(113, 125, 55), Scalar(123, 255, 255)},
+        {"Purple", Scalar(125, 65, 30), Scalar(165, 255, 255)},
+        {"Brown", Scalar(0, 120, 110), Scalar(9, 220, 155)},
+        {"Black", Scalar(0, 0, 0), Scalar(179, 100, 38)},
         {"White",  Scalar(0, 0, 170), Scalar(179, 65, 255)}
     };
 }
@@ -140,8 +141,23 @@ Mat detectEdges(const Mat& image) {
 Mat detectColour(const Mat& hsv, const ColourRange& colour) {
 
     Mat mask;
-
     inRange(hsv, colour.lower, colour.upper, mask);
+
+    // Combine Red and Red2 using their actual defined thresholds
+    if (colour.name == "Red") {
+
+        for (const auto& range : getColourRanges()) {
+
+            if (range.name == "Red2") {
+
+                Mat secondMask;
+                inRange(hsv, range.lower, range.upper, secondMask);
+
+                bitwise_or(mask, secondMask, mask);
+                break;
+            }
+        }
+    }
 
     Mat kernel = getStructuringElement(
         MORPH_ELLIPSE,
@@ -152,7 +168,6 @@ Mat detectColour(const Mat& hsv, const ColourRange& colour) {
 
     return mask;
 }
-
 // =====================================================
 // COLOUR OVERLAY
 // =====================================================
