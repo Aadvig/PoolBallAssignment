@@ -39,11 +39,11 @@ Mat detectEdges(const Mat& image) {
 
     // Reduce noise
     Mat blurred;
-    GaussianBlur(gray, blurred, Size(5, 5), 1.5);
+    GaussianBlur(gray, blurred, Size(5, 5), 1);
 
     // Apply Canny
     Mat edges;
-    Canny(blurred, edges, 40, 150);
+    Canny(blurred, edges, 25, 75);
 
     return edges;
 }
@@ -51,7 +51,7 @@ Mat detectEdges(const Mat& image) {
 int main() {
 
     string folder = "/Users/aadyavig/CLionProjects/PoolBallAssignment/";
-    string filename = "Table1.jpeg";
+    string filename = "Table4.jpeg";
 
     Mat image = imread(folder + filename);
 
