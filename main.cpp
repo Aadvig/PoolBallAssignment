@@ -2,6 +2,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 using namespace cv;
 using namespace std;
@@ -10,8 +11,10 @@ using namespace std;
 // ADJUSTABLE PARAMETERS
 // =====================================================
 
-const int TABLE_NUMBER = 7;
-const string SELECTED_COLOUR = "Black";   // Change this only
+const int TABLE_NUMBER = 2;
+const string SELECTED_COLOUR = "Yellow";   // Change this only
+const int BORDER_MARGIN = 25;  // Pixels removed from the outer image edge
+const int GREEN_BORDER_MARGIN = 100;
 
 // Mean shift
 const int SPATIAL_RADIUS = 15;
@@ -24,6 +27,15 @@ const int CANNY_HIGH = 100;
 
 // Colour mask cleanup
 const int MASK_KERNEL_SIZE = 3;
+// Spatial checks applied to EVERY colour after HSV thresholding
+const bool USE_SPATIAL_FILTER = true;
+const int LOCAL_WINDOW = 81;              // Odd; neighbourhood diameter in pixels
+const double MIN_LOCAL_DIFFERENCE = 5.0; // Lab difference from local surroundings
+const int MIN_COLOUR_AREA = 15;           // Minimum contiguous colour pixels
+const int MAX_REGION_WIDTH = 105;        // Reject large felt/cushion regions
+const int MAX_REGION_HEIGHT = 130;
+
+// Show optional debug spatial mask (does not add an imshow window)
 const int EDGE_EXPANSION = 7;
 
 // Circle detection
@@ -47,15 +59,16 @@ struct ColourRange {
 
 vector<ColourRange> getColourRanges() {
     return {
-        {"Red",  Scalar(0, 170, 115), Scalar(5, 255, 255)},
+        {"Red",  Scalar(0, 170, 115), Scalar(0, 255, 255)},
         {"Red2", Scalar(173, 170, 115), Scalar(179, 255, 255)},
         {"Orange", Scalar(7, 130, 140), Scalar(16, 255, 255)},
         {"Yellow", Scalar(20, 200, 200), Scalar(39, 255, 255)},
-        {"Green",  Scalar(40, 100, 60), Scalar(85, 255, 255)},
+        {"Green",  Scalar(67, 110, 35), Scalar(74, 160, 90)},
+        {"Green2", Scalar(58, 95, 38),  Scalar(71, 165, 102)},
         {"Blue", Scalar(113, 125, 55), Scalar(123, 255, 255)},
         {"Purple", Scalar(125, 65, 30), Scalar(165, 255, 255)},
         {"Brown", Scalar(0, 120, 110), Scalar(9, 220, 155)},
-        {"Black", Scalar(0, 0, 0), Scalar(179, 100, 38)},
+        {"Black", Scalar(0, 0, 0), Scalar(170, 100, 30)},
         {"White",  Scalar(0, 0, 170), Scalar(179, 65, 255)}
     };
 }
@@ -138,36 +151,107 @@ Mat detectEdges(const Mat& image) {
 // COLOUR DETECTION
 // =====================================================
 
-Mat detectColour(const Mat& hsv, const ColourRange& colour) {
+
+// =====================================================
+// SPATIAL FILTER: how different is each pixel from its neighbours?
+// Uses Lab colour so it works for red, green, blue, white, etc.
+// This is NOT an additional mean-shift cluster label.
+// =====================================================
+
+Mat localColourDifference(const Mat& segmented) {
+    Mat lab, labFloat, localAverage, delta;
+    cvtColor(segmented, lab, COLOR_BGR2Lab);
+    lab.convertTo(labFloat, CV_32FC3);
+
+    GaussianBlur(labFloat, localAverage,
+                 Size(LOCAL_WINDOW, LOCAL_WINDOW), 0);
+
+    absdiff(labFloat, localAverage, delta);
+    vector<Mat> channel;
+    split(delta, channel);
+
+    Mat difference;
+    magnitude(channel[0], channel[1], difference);
+    magnitude(difference, channel[2], difference);
+    return difference;  // CV_32F, Lab distance
+}
+
+// =====================================================
+// COLOUR DETECTION: HSV + optional spatial validation
+// =====================================================
+
+Mat detectColour(const Mat& hsv,
+                 const ColourRange& colour,
+                 const Mat& spatialDifference) {
 
     Mat mask;
     inRange(hsv, colour.lower, colour.upper, mask);
 
-    // Combine Red and Red2 using their actual defined thresholds
-    if (colour.name == "Red") {
+    // Combine alternative hue ranges BEFORE spatial filtering.
+    string secondaryName;
+    if (colour.name == "Red") secondaryName = "Red2";
+    if (colour.name == "Green") secondaryName = "Green2";
 
-        for (const auto& range : getColourRanges()) {
-
-            if (range.name == "Red2") {
-
-                Mat secondMask;
-                inRange(hsv, range.lower, range.upper, secondMask);
-
-                bitwise_or(mask, secondMask, mask);
-                break;
-            }
+    for (const auto& range : getColourRanges()) {
+        if (range.name == secondaryName && !secondaryName.empty()) {
+            Mat secondMask;
+            inRange(hsv, range.lower, range.upper, secondMask);
+            bitwise_or(mask, secondMask, mask);
+            break;
         }
     }
 
-    Mat kernel = getStructuringElement(
-        MORPH_ELLIPSE,
-        Size(MASK_KERNEL_SIZE, MASK_KERNEL_SIZE)
-    );
+    if (USE_SPATIAL_FILTER) {
+        // Keep ONLY HSV-coloured pixels that also differ from
+        // the colours in their larger spatial neighbourhood.
+        Mat contrastMask;
+        compare(spatialDifference, MIN_LOCAL_DIFFERENCE,
+                contrastMask, CMP_GE);
+        bitwise_and(mask, contrastMask, mask);
+    }
 
-    morphologyEx(mask, mask, MORPH_OPEN, kernel);
+    morphologyEx(mask, mask, MORPH_OPEN,
+                 getStructuringElement(MORPH_ELLIPSE,
+                                       Size(MASK_KERNEL_SIZE, MASK_KERNEL_SIZE)));
 
+    // Remove connected regions whose dimensions look more like
+    // felt/cushions than a patch on a pool ball.
+    if (USE_SPATIAL_FILTER) {
+        Mat labels, stats, centroids;
+        int count = connectedComponentsWithStats(
+            mask, labels, stats, centroids, 8, CV_32S);
+
+        Mat filtered = Mat::zeros(mask.size(), CV_8U);
+        for (int label = 1; label < count; ++label) {
+            int area = stats.at<int>(label, CC_STAT_AREA);
+            int width = stats.at<int>(label, CC_STAT_WIDTH);
+            int height = stats.at<int>(label, CC_STAT_HEIGHT);
+            if (area < MIN_COLOUR_AREA ||
+                width > MAX_REGION_WIDTH || height > MAX_REGION_HEIGHT)
+                continue;
+            filtered.setTo(255, labels == label);
+        }
+        mask = filtered;
+    }
+
+    // Use a larger border margin for green
+    int margin = (colour.name == "Green")
+        ? GREEN_BORDER_MARGIN
+        : BORDER_MARGIN;
+
+    // Prevent the margin exceeding image dimensions
+    margin = min(margin, min(mask.rows, mask.cols) / 2);
+
+    if (margin > 0) {
+        mask.rowRange(0, margin).setTo(0);
+        mask.rowRange(mask.rows - margin, mask.rows).setTo(0);
+
+        mask.colRange(0, margin).setTo(0);
+        mask.colRange(mask.cols - margin, mask.cols).setTo(0);
+    }
     return mask;
 }
+
 // =====================================================
 // COLOUR OVERLAY
 // =====================================================
@@ -188,13 +272,101 @@ Mat highlightColour(const Mat& image, const Mat& mask) {
 // =====================================================
 
 
-
 Mat detectBallCircles(const Mat& image,
                       const Mat& edges,
                       const Mat& colourMask) {
 
+    Mat result = image.clone();
+
     // =====================================================
-    // 1. Find regions of the selected colour
+    // WHITE BALL: Largest connected white region only
+    // =====================================================
+
+    if (SELECTED_COLOUR == "White") {
+
+        Mat labels, stats, centroids;
+
+        int count = connectedComponentsWithStats(
+            colourMask,
+            labels,
+            stats,
+            centroids,
+            8,
+            CV_32S
+        );
+
+        int largestLabel = -1;
+        int largestArea = 0;
+
+        // Find the largest white connected component
+        for (int i = 1; i < count; i++) {
+
+            int area = stats.at<int>(i, CC_STAT_AREA);
+
+            if (area > largestArea) {
+                largestArea = area;
+                largestLabel = i;
+            }
+        }
+
+        if (largestLabel != -1) {
+
+            // Extract only the largest white region
+            Mat largestMask = (labels == largestLabel);
+
+            vector<vector<Point>> contours;
+
+            Mat detectionMask = colourMask.clone();
+
+            if (SELECTED_COLOUR == "Green") {
+
+                const int GREEN_EXPANSION = 7; // Adjustable, must be odd
+
+                dilate(
+                    detectionMask,
+                    detectionMask,
+                    getStructuringElement(
+                        MORPH_ELLIPSE,
+                        Size(GREEN_EXPANSION, GREEN_EXPANSION)
+                    )
+                );
+            }
+
+            findContours(
+                detectionMask,
+                contours,
+                RETR_EXTERNAL,
+                CHAIN_APPROX_SIMPLE
+            );
+
+            if (!contours.empty()) {
+
+                Point2f centre;
+                float radius;
+
+                minEnclosingCircle(
+                    contours[0],
+                    centre,
+                    radius
+                );
+
+                // Draw only the white ball
+                circle(result, centre, cvRound(radius),
+                       Scalar(0, 255, 0), 2);
+
+                circle(result, centre, 3,
+                       Scalar(0, 0, 255), -1);
+
+                cout << "White ball: " << centre
+                     << ", radius: " << radius << endl;
+            }
+        }
+
+        return result;
+    }
+
+    // =====================================================
+    // ALL OTHER COLOURS: Existing colour + Canny method
     // =====================================================
 
     vector<vector<Point>> contours;
@@ -206,16 +378,12 @@ Mat detectBallCircles(const Mat& image,
         CHAIN_APPROX_SIMPLE
     );
 
-    Mat result = image.clone();
+    const int EDGE_SEARCH_DISTANCE = 10;
 
     for (const auto& contour : contours) {
 
         if (contour.size() < 3)
             continue;
-
-        // =================================================
-        // 2. Initial bounding circle from colour region
-        // =================================================
 
         Point2f initialCentre;
         float initialRadius;
@@ -226,25 +394,13 @@ Mat detectBallCircles(const Mat& image,
             initialRadius
         );
 
-        // Ignore tiny colour regions
-        if (initialRadius < MIN_CIRCLE_RADIUS)
+        if (initialRadius < MIN_CIRCLE_RADIUS ||
+            initialRadius > MAX_CIRCLE_RADIUS)
             continue;
 
-        // Avoid regions already too large to be one ball
-        if (initialRadius > MAX_CIRCLE_RADIUS)
-            continue;
+        // Search for Canny edges near the colour region
+        Mat searchMask = Mat::zeros(image.size(), CV_8U);
 
-        // =================================================
-        // 3. Find nearby Canny edges
-        // =================================================
-
-        const int EDGE_SEARCH_DISTANCE = 10;
-
-        Mat searchMask = Mat::zeros(
-            image.size(), CV_8U
-        );
-
-        // Create a search region around the initial circle
         circle(
             searchMask,
             initialCentre,
@@ -253,33 +409,19 @@ Mat detectBallCircles(const Mat& image,
             FILLED
         );
 
-        // Select Canny edges inside the search region
         Mat nearbyEdges;
-
-        bitwise_and(
-            edges,
-            searchMask,
-            nearbyEdges
-        );
-
-        // =================================================
-        // 4. Refine circle using colour + nearby edges
-        // =================================================
+        bitwise_and(edges, searchMask, nearbyEdges);
 
         vector<Point> edgePoints;
         findNonZero(nearbyEdges, edgePoints);
 
         vector<Point2f> combinedPoints;
 
-        // Include all colour contour points
-        for (const Point& p : contour) {
-            combinedPoints.push_back(Point2f(p));
-        }
+        for (const Point& p : contour)
+            combinedPoints.emplace_back(p.x, p.y);
 
-        // Include nearby Canny edge points
-        for (const Point& p : edgePoints) {
-            combinedPoints.push_back(Point2f(p));
-        }
+        for (const Point& p : edgePoints)
+            combinedPoints.emplace_back(p.x, p.y);
 
         Point2f finalCentre;
         float finalRadius;
@@ -290,40 +432,19 @@ Mat detectBallCircles(const Mat& image,
             finalRadius
         );
 
-        // Reject oversized results
         if (finalRadius < MIN_CIRCLE_RADIUS ||
             finalRadius > MAX_CIRCLE_RADIUS)
             continue;
 
-        // =================================================
-        // 5. Draw detected ball
-        // =================================================
+        circle(result, finalCentre, cvRound(finalRadius),
+               Scalar(0, 255, 0), 2);
 
-        circle(
-            result,
-            finalCentre,
-            cvRound(finalRadius),
-            Scalar(0, 255, 0),
-            2
-        );
-
-        circle(
-            result,
-            finalCentre,
-            3,
-            Scalar(0, 0, 255),
-            -1
-        );
-
-        cout << "Ball candidate: ("
-             << finalCentre.x << ", "
-             << finalCentre.y << "), radius "
-             << finalRadius << endl;
+        circle(result, finalCentre, 3,
+               Scalar(0, 0, 255), -1);
     }
 
     return result;
 }
-
 
 
 
@@ -358,13 +479,16 @@ int main() {
     // 5. Get chosen colour
     ColourRange selected = getSelectedColourRange(SELECTED_COLOUR);
 
-    // 6. Detect selected colour
-    Mat colourMask = detectColour(hsv, selected);
+    // 6. Estimate local spatial colour difference from mean-shift result
+    Mat spatialDifference = localColourDifference(segmented);
 
-    // 7. Overlay colour mask
+    // 7. Detect selected colour using HSV and spatial information
+    Mat colourMask = detectColour(hsv, selected, spatialDifference);
+
+    // 8. Overlay colour mask
     Mat colourOverlay = highlightColour(transformed, colourMask);
 
-    // 8. Combine colour + canny
+    // 9. Combine colour + canny
     Mat combined = detectBallCircles(transformed, edges, colourMask);
 
     // =================================================
