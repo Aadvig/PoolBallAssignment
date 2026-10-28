@@ -11,7 +11,7 @@ using namespace std;
 // =====================================================
 
 const int TABLE_NUMBER = 2;
-const string SELECTED_COLOUR = "Red";   // Change this only
+const string SELECTED_COLOUR = "Yellow";   // Change this only
 
 // Mean shift
 const int SPATIAL_RADIUS = 15;
@@ -27,8 +27,8 @@ const int MASK_KERNEL_SIZE = 3;
 const int EDGE_EXPANSION = 7;
 
 // Circle detection
-const int REGION_MERGE_DISTANCE = 10;
-const int MIN_CIRCLE_RADIUS = 10;
+const int REGION_MERGE_DISTANCE = 5;
+const int MIN_CIRCLE_RADIUS = 20;
 const int MAX_CIRCLE_RADIUS = 50;
 
 // Folder
@@ -172,41 +172,20 @@ Mat highlightColour(const Mat& image, const Mat& mask) {
 // COMBINE COLOUR + CANNY
 // =====================================================
 
+
+
 Mat detectBallCircles(const Mat& image,
                       const Mat& edges,
                       const Mat& colourMask) {
 
-    // Find Canny edges near the selected colour
-    Mat expandedMask;
+    // =====================================================
+    // 1. Find regions of the selected colour
+    // =====================================================
 
-    dilate(
-        colourMask,
-        expandedMask,
-        getStructuringElement(MORPH_ELLIPSE, Size(7, 7))
-    );
-
-    Mat combinedMask;
-    bitwise_and(edges, expandedMask, combinedMask);
-
-    // Merge nearby edge fragments into regions
-    Mat merged;
-    Mat mergeKernel = getStructuringElement(
-        MORPH_ELLIPSE,
-        Size(REGION_MERGE_DISTANCE, REGION_MERGE_DISTANCE)
-    );
-
-    morphologyEx(
-        combinedMask,
-        merged,
-        MORPH_CLOSE,
-        mergeKernel
-    );
-
-    // Find contours of merged regions
     vector<vector<Point>> contours;
 
     findContours(
-        merged,
+        colourMask.clone(),
         contours,
         RETR_EXTERNAL,
         CHAIN_APPROX_SIMPLE
@@ -219,43 +198,119 @@ Mat detectBallCircles(const Mat& image,
         if (contour.size() < 3)
             continue;
 
-        // Find minimum enclosing circle
-        Point2f centre;
-        float radius;
+        // =================================================
+        // 2. Initial bounding circle from colour region
+        // =================================================
 
-        minEnclosingCircle(contour, centre, radius);
+        Point2f initialCentre;
+        float initialRadius;
 
-        // Reject circles outside expected size range
-        if (radius < MIN_CIRCLE_RADIUS ||
-            radius > MAX_CIRCLE_RADIUS)
+        minEnclosingCircle(
+            contour,
+            initialCentre,
+            initialRadius
+        );
+
+        // Ignore tiny colour regions
+        if (initialRadius < MIN_CIRCLE_RADIUS)
             continue;
 
-        // Draw candidate ball circle
+        // Avoid regions already too large to be one ball
+        if (initialRadius > MAX_CIRCLE_RADIUS)
+            continue;
+
+        // =================================================
+        // 3. Find nearby Canny edges
+        // =================================================
+
+        const int EDGE_SEARCH_DISTANCE = 10;
+
+        Mat searchMask = Mat::zeros(
+            image.size(), CV_8U
+        );
+
+        // Create a search region around the initial circle
+        circle(
+            searchMask,
+            initialCentre,
+            cvRound(initialRadius) + EDGE_SEARCH_DISTANCE,
+            Scalar(255),
+            FILLED
+        );
+
+        // Select Canny edges inside the search region
+        Mat nearbyEdges;
+
+        bitwise_and(
+            edges,
+            searchMask,
+            nearbyEdges
+        );
+
+        // =================================================
+        // 4. Refine circle using colour + nearby edges
+        // =================================================
+
+        vector<Point> edgePoints;
+        findNonZero(nearbyEdges, edgePoints);
+
+        vector<Point2f> combinedPoints;
+
+        // Include all colour contour points
+        for (const Point& p : contour) {
+            combinedPoints.push_back(Point2f(p));
+        }
+
+        // Include nearby Canny edge points
+        for (const Point& p : edgePoints) {
+            combinedPoints.push_back(Point2f(p));
+        }
+
+        Point2f finalCentre;
+        float finalRadius;
+
+        minEnclosingCircle(
+            combinedPoints,
+            finalCentre,
+            finalRadius
+        );
+
+        // Reject oversized results
+        if (finalRadius < MIN_CIRCLE_RADIUS ||
+            finalRadius > MAX_CIRCLE_RADIUS)
+            continue;
+
+        // =================================================
+        // 5. Draw detected ball
+        // =================================================
+
         circle(
             result,
-            centre,
-            cvRound(radius),
+            finalCentre,
+            cvRound(finalRadius),
             Scalar(0, 255, 0),
             2
         );
 
-        // Mark centre
         circle(
             result,
-            centre,
+            finalCentre,
             3,
             Scalar(0, 0, 255),
             -1
         );
 
         cout << "Ball candidate: ("
-             << centre.x << ", "
-             << centre.y << "), radius "
-             << radius << endl;
+             << finalCentre.x << ", "
+             << finalCentre.y << "), radius "
+             << finalRadius << endl;
     }
 
     return result;
 }
+
+
+
 
 // =====================================================
 // MAIN
