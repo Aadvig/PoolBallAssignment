@@ -11,8 +11,8 @@ using namespace std;
 // ADJUSTABLE PARAMETERS
 // =====================================================
 
-const int TABLE_NUMBER = 2;
-const string SELECTED_COLOUR = "Yellow";   // Change this only
+const int TABLE_NUMBER = 7;
+const string SELECTED_COLOUR = "Green";   // Change this only
 const int BORDER_MARGIN = 25;  // Pixels removed from the outer image edge
 const int GREEN_BORDER_MARGIN = 100;
 
@@ -30,7 +30,7 @@ const int MASK_KERNEL_SIZE = 3;
 // Spatial checks applied to EVERY colour after HSV thresholding
 const bool USE_SPATIAL_FILTER = true;
 const int LOCAL_WINDOW = 81;              // Odd; neighbourhood diameter in pixels
-const double MIN_LOCAL_DIFFERENCE = 5.0; // Lab difference from local surroundings
+const double MIN_LOCAL_DIFFERENCE = 25.0; // Lab difference from local surroundings
 const int MIN_COLOUR_AREA = 15;           // Minimum contiguous colour pixels
 const int MAX_REGION_WIDTH = 105;        // Reject large felt/cushion regions
 const int MAX_REGION_HEIGHT = 130;
@@ -65,8 +65,8 @@ vector<ColourRange> getColourRanges() {
         {"Yellow", Scalar(20, 200, 200), Scalar(39, 255, 255)},
         {"Green",  Scalar(67, 110, 35), Scalar(74, 160, 90)},
         {"Green2", Scalar(58, 95, 38),  Scalar(71, 165, 102)},
-        {"Blue", Scalar(113, 125, 55), Scalar(123, 255, 255)},
-        {"Purple", Scalar(125, 65, 30), Scalar(165, 255, 255)},
+        {"Blue",   Scalar(113, 125, 55), Scalar(123, 255, 255)},
+        {"Purple", Scalar(125, 65, 30),  Scalar(165, 255, 255)},
         {"Brown", Scalar(0, 120, 110), Scalar(9, 220, 155)},
         {"Black", Scalar(0, 0, 0), Scalar(170, 100, 30)},
         {"White",  Scalar(0, 0, 170), Scalar(179, 65, 255)}
@@ -180,77 +180,170 @@ Mat localColourDifference(const Mat& segmented) {
 // COLOUR DETECTION: HSV + optional spatial validation
 // =====================================================
 
+
+// Use the calibrated HSV thresholds above. No extra guessed Lab references.
+// Spatial contrast is still calculated by localColourDifference().
+
 Mat detectColour(const Mat& hsv,
                  const ColourRange& colour,
                  const Mat& spatialDifference) {
 
+    // =====================================================
+    // 1. HSV colour detection
+    // =====================================================
+
     Mat mask;
     inRange(hsv, colour.lower, colour.upper, mask);
 
-    // Combine alternative hue ranges BEFORE spatial filtering.
+    // Combine secondary HSV ranges
     string secondaryName;
-    if (colour.name == "Red") secondaryName = "Red2";
-    if (colour.name == "Green") secondaryName = "Green2";
 
-    for (const auto& range : getColourRanges()) {
-        if (range.name == secondaryName && !secondaryName.empty()) {
-            Mat secondMask;
-            inRange(hsv, range.lower, range.upper, secondMask);
-            bitwise_or(mask, secondMask, mask);
-            break;
+    if (colour.name == "Red")
+        secondaryName = "Red2";
+
+    if (colour.name == "Green")
+        secondaryName = "Green2";
+
+    if (colour.name == "Blue")
+        secondaryName = "Blue2";
+
+    if (colour.name == "Purple")
+        secondaryName = "Purple2";
+
+    if (!secondaryName.empty()) {
+
+        for (const auto& range : getColourRanges()) {
+
+            if (range.name == secondaryName) {
+
+                Mat secondMask;
+
+                inRange(
+                    hsv,
+                    range.lower,
+                    range.upper,
+                    secondMask
+                );
+
+                bitwise_or(mask, secondMask, mask);
+                break;
+            }
         }
     }
 
+    // =====================================================
+    // 3. Spatial contrast filtering
+    // =====================================================
+
     if (USE_SPATIAL_FILTER) {
-        // Keep ONLY HSV-coloured pixels that also differ from
-        // the colours in their larger spatial neighbourhood.
+
         Mat contrastMask;
-        compare(spatialDifference, MIN_LOCAL_DIFFERENCE,
-                contrastMask, CMP_GE);
+
+        compare(
+            spatialDifference,
+            MIN_LOCAL_DIFFERENCE,
+            contrastMask,
+            CMP_GE
+        );
+
         bitwise_and(mask, contrastMask, mask);
     }
 
-    morphologyEx(mask, mask, MORPH_OPEN,
-                 getStructuringElement(MORPH_ELLIPSE,
-                                       Size(MASK_KERNEL_SIZE, MASK_KERNEL_SIZE)));
+    // =====================================================
+    // 4. Morphological cleanup
+    // =====================================================
 
-    // Remove connected regions whose dimensions look more like
-    // felt/cushions than a patch on a pool ball.
+    Mat kernel = getStructuringElement(
+        MORPH_ELLIPSE,
+        Size(MASK_KERNEL_SIZE, MASK_KERNEL_SIZE)
+    );
+
+    morphologyEx(
+        mask,
+        mask,
+        MORPH_OPEN,
+        kernel
+    );
+
+    // =====================================================
+    // 5. Connected component filtering
+    // =====================================================
+
     if (USE_SPATIAL_FILTER) {
+
         Mat labels, stats, centroids;
+
         int count = connectedComponentsWithStats(
-            mask, labels, stats, centroids, 8, CV_32S);
+            mask,
+            labels,
+            stats,
+            centroids,
+            8,
+            CV_32S
+        );
 
         Mat filtered = Mat::zeros(mask.size(), CV_8U);
+
         for (int label = 1; label < count; ++label) {
-            int area = stats.at<int>(label, CC_STAT_AREA);
-            int width = stats.at<int>(label, CC_STAT_WIDTH);
-            int height = stats.at<int>(label, CC_STAT_HEIGHT);
+
+            int area = stats.at<int>(
+                label, CC_STAT_AREA
+            );
+
+            int width = stats.at<int>(
+                label, CC_STAT_WIDTH
+            );
+
+            int height = stats.at<int>(
+                label, CC_STAT_HEIGHT
+            );
+
             if (area < MIN_COLOUR_AREA ||
-                width > MAX_REGION_WIDTH || height > MAX_REGION_HEIGHT)
+                width > MAX_REGION_WIDTH ||
+                height > MAX_REGION_HEIGHT) {
+
                 continue;
+            }
+
             filtered.setTo(255, labels == label);
         }
+
         mask = filtered;
     }
 
-    // Use a larger border margin for green
+    // =====================================================
+    // 6. Border exclusion
+    // =====================================================
+
     int margin = (colour.name == "Green")
         ? GREEN_BORDER_MARGIN
         : BORDER_MARGIN;
 
-    // Prevent the margin exceeding image dimensions
-    margin = min(margin, min(mask.rows, mask.cols) / 2);
+    margin = max(
+        0,
+        min(margin, min(mask.rows, mask.cols) / 2)
+    );
 
     if (margin > 0) {
+
         mask.rowRange(0, margin).setTo(0);
-        mask.rowRange(mask.rows - margin, mask.rows).setTo(0);
+
+        mask.rowRange(
+            mask.rows - margin,
+            mask.rows
+        ).setTo(0);
 
         mask.colRange(0, margin).setTo(0);
-        mask.colRange(mask.cols - margin, mask.cols).setTo(0);
+
+        mask.colRange(
+            mask.cols - margin,
+            mask.cols
+        ).setTo(0);
     }
+
     return mask;
 }
+
 
 // =====================================================
 // COLOUR OVERLAY
@@ -315,25 +408,8 @@ Mat detectBallCircles(const Mat& image,
             Mat largestMask = (labels == largestLabel);
 
             vector<vector<Point>> contours;
-
-            Mat detectionMask = colourMask.clone();
-
-            if (SELECTED_COLOUR == "Green") {
-
-                const int GREEN_EXPANSION = 7; // Adjustable, must be odd
-
-                dilate(
-                    detectionMask,
-                    detectionMask,
-                    getStructuringElement(
-                        MORPH_ELLIPSE,
-                        Size(GREEN_EXPANSION, GREEN_EXPANSION)
-                    )
-                );
-            }
-
             findContours(
-                detectionMask,
+                largestMask.clone(),
                 contours,
                 RETR_EXTERNAL,
                 CHAIN_APPROX_SIMPLE
@@ -482,7 +558,7 @@ int main() {
     // 6. Estimate local spatial colour difference from mean-shift result
     Mat spatialDifference = localColourDifference(segmented);
 
-    // 7. Detect selected colour using HSV and spatial information
+    // 7. Detect selected colour with calibrated HSV + spatial filtering
     Mat colourMask = detectColour(hsv, selected, spatialDifference);
 
     // 8. Overlay colour mask
@@ -506,3 +582,4 @@ int main() {
 
     return 0;
 }
+
