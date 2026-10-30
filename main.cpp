@@ -11,14 +11,14 @@ using namespace std;
 // ADJUSTABLE PARAMETERS
 // =====================================================
 
-const int TABLE_NUMBER = 7;
-const string SELECTED_COLOUR = "Green";   // Change this only
-const int BORDER_MARGIN = 25;  // Pixels removed from the outer image edge
+const int TABLE_NUMBER = 6;
+const string SELECTED_COLOUR = "Black";   // Change this only
+const int BORDER_MARGIN = 15;  // Pixels removed from the outer image edge
 const int GREEN_BORDER_MARGIN = 100;
 
 // Mean shift
 const int SPATIAL_RADIUS = 15;
-const int COLOUR_RADIUS = 20;
+const int COLOUR_RADIUS = 10;
 const int PYRAMID_LEVEL = 1;
 
 // Canny
@@ -27,19 +27,10 @@ const int CANNY_HIGH = 100;
 
 // Colour mask cleanup
 const int MASK_KERNEL_SIZE = 3;
-// Spatial checks applied to EVERY colour after HSV thresholding
-const bool USE_SPATIAL_FILTER = true;
-const int LOCAL_WINDOW = 81;              // Odd; neighbourhood diameter in pixels
-const double MIN_LOCAL_DIFFERENCE = 25.0; // Lab difference from local surroundings
-const int MIN_COLOUR_AREA = 15;           // Minimum contiguous colour pixels
-const int MAX_REGION_WIDTH = 105;        // Reject large felt/cushion regions
-const int MAX_REGION_HEIGHT = 130;
-
-// Show optional debug spatial mask (does not add an imshow window)
-const int EDGE_EXPANSION = 7;
+const int EDGE_EXPANSION = 17;
 
 // Circle detection
-const int REGION_MERGE_DISTANCE = 5;
+const int REGION_MERGE_DISTANCE = 10;
 const int MIN_CIRCLE_RADIUS = 10;
 const int MAX_CIRCLE_RADIUS = 100;
 
@@ -48,7 +39,7 @@ const string FOLDER =
     "/Users/aadyavig/CLionProjects/PoolBallAssignment/";
 
 // =====================================================
-// COLOUR PARAMETERS
+// COLOUR PARAMETER
 // =====================================================
 
 struct ColourRange {
@@ -61,7 +52,7 @@ vector<ColourRange> getColourRanges() {
     return {
         {"Red",  Scalar(0, 170, 115), Scalar(0, 255, 255)},
         {"Red2", Scalar(173, 170, 115), Scalar(179, 255, 255)},
-        {"Orange", Scalar(7, 130, 140), Scalar(16, 255, 255)},
+        {"Orange", Scalar(7, 145, 130), Scalar(13, 255, 255)},
         {"Yellow", Scalar(20, 200, 200), Scalar(39, 255, 255)},
         {"Green",  Scalar(67, 110, 35), Scalar(74, 160, 90)},
         {"Green2", Scalar(58, 95, 38),  Scalar(71, 165, 102)},
@@ -148,45 +139,11 @@ Mat detectEdges(const Mat& image) {
 }
 
 // =====================================================
-// COLOUR DETECTION
+// COLOUR DETECTION: HSV THRESHOLDS ONLY
 // =====================================================
-
-
-// =====================================================
-// SPATIAL FILTER: how different is each pixel from its neighbours?
-// Uses Lab colour so it works for red, green, blue, white, etc.
-// This is NOT an additional mean-shift cluster label.
-// =====================================================
-
-Mat localColourDifference(const Mat& segmented) {
-    Mat lab, labFloat, localAverage, delta;
-    cvtColor(segmented, lab, COLOR_BGR2Lab);
-    lab.convertTo(labFloat, CV_32FC3);
-
-    GaussianBlur(labFloat, localAverage,
-                 Size(LOCAL_WINDOW, LOCAL_WINDOW), 0);
-
-    absdiff(labFloat, localAverage, delta);
-    vector<Mat> channel;
-    split(delta, channel);
-
-    Mat difference;
-    magnitude(channel[0], channel[1], difference);
-    magnitude(difference, channel[2], difference);
-    return difference;  // CV_32F, Lab distance
-}
-
-// =====================================================
-// COLOUR DETECTION: HSV + optional spatial validation
-// =====================================================
-
-
-// Use the calibrated HSV thresholds above. No extra guessed Lab references.
-// Spatial contrast is still calculated by localColourDifference().
 
 Mat detectColour(const Mat& hsv,
-                 const ColourRange& colour,
-                 const Mat& spatialDifference) {
+                 const ColourRange& colour) {
 
     // =====================================================
     // 1. HSV colour detection
@@ -232,25 +189,7 @@ Mat detectColour(const Mat& hsv,
     }
 
     // =====================================================
-    // 3. Spatial contrast filtering
-    // =====================================================
-
-    if (USE_SPATIAL_FILTER) {
-
-        Mat contrastMask;
-
-        compare(
-            spatialDifference,
-            MIN_LOCAL_DIFFERENCE,
-            contrastMask,
-            CMP_GE
-        );
-
-        bitwise_and(mask, contrastMask, mask);
-    }
-
-    // =====================================================
-    // 4. Morphological cleanup
+    // 2. Morphological cleanup
     // =====================================================
 
     Mat kernel = getStructuringElement(
@@ -266,53 +205,7 @@ Mat detectColour(const Mat& hsv,
     );
 
     // =====================================================
-    // 5. Connected component filtering
-    // =====================================================
-
-    if (USE_SPATIAL_FILTER) {
-
-        Mat labels, stats, centroids;
-
-        int count = connectedComponentsWithStats(
-            mask,
-            labels,
-            stats,
-            centroids,
-            8,
-            CV_32S
-        );
-
-        Mat filtered = Mat::zeros(mask.size(), CV_8U);
-
-        for (int label = 1; label < count; ++label) {
-
-            int area = stats.at<int>(
-                label, CC_STAT_AREA
-            );
-
-            int width = stats.at<int>(
-                label, CC_STAT_WIDTH
-            );
-
-            int height = stats.at<int>(
-                label, CC_STAT_HEIGHT
-            );
-
-            if (area < MIN_COLOUR_AREA ||
-                width > MAX_REGION_WIDTH ||
-                height > MAX_REGION_HEIGHT) {
-
-                continue;
-            }
-
-            filtered.setTo(255, labels == label);
-        }
-
-        mask = filtered;
-    }
-
-    // =====================================================
-    // 6. Border exclusion
+    // 3. Border exclusion
     // =====================================================
 
     int margin = (colour.name == "Green")
@@ -555,11 +448,8 @@ int main() {
     // 5. Get chosen colour
     ColourRange selected = getSelectedColourRange(SELECTED_COLOUR);
 
-    // 6. Estimate local spatial colour difference from mean-shift result
-    Mat spatialDifference = localColourDifference(segmented);
-
-    // 7. Detect selected colour with calibrated HSV + spatial filtering
-    Mat colourMask = detectColour(hsv, selected, spatialDifference);
+    // 6. Detect selected colour with HSV thresholds only
+    Mat colourMask = detectColour(hsv, selected);
 
     // 8. Overlay colour mask
     Mat colourOverlay = highlightColour(transformed, colourMask);
